@@ -94,3 +94,47 @@ static size_t filter_by_common_index(int iters, Name *names, size_t n) {
             size_t next_n = keep * alphabet;
             Key *next = resize(NULL, next_n, sizeof(*next));
             size_t t = 0;
+            for (size_t k = 0; k < keep; ++k) {
+                size_t len = strlen(keys[k].text);
+                for (size_t c = 0; c < alphabet; ++c) {
+                    char *s = resize(NULL, len + 2, 1);
+                    memcpy(s, keys[k].text, len);
+                    s[len] = ALLOWED[c]; s[len+1] = 0;
+                    next[t] = (Key){s, 0, t}; ++t;
+                }
+            }
+            free_keys(keys, nk); keys = next; nk = next_n;
+        }
+    }
+    free_keys(keys, nk); free(active);
+    return n;
+}
+int main(int argc, char **argv) {
+    const char *path = argc > 1 ? argv[1] : "usernames_head.csv";
+    FILE *f = fopen(path, "r"); if (!f) die(path);
+    Name *names = NULL;
+    size_t n = 0, capacity = 0, linecap = 0;
+    char *line = NULL;
+    ssize_t len;
+    while ((len = getline(&line, &linecap, f)) >= 0) {
+        if (memchr(line, 0, (size_t)len)) { fputs("Embedded NUL in input\n", stderr); return 1; }
+        char *start = line;
+        while (*start && isspace((unsigned char)*start)) ++start;
+        char *end = line + len;
+        while (end > start && isspace((unsigned char)end[-1])) --end;
+        *end = 0;
+        if (n == capacity) { capacity = capacity ? capacity * 2 : 1024; names = resize(names, capacity, sizeof(*names)); }
+        names[n].text = copy(start); names[n].lower = copy(start);
+        for (char *p = names[n].lower; *p; ++p)
+            if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
+        ++n;
+    }
+    if (ferror(f)) die("read");
+    free(line); if (fclose(f)) die("fclose");
+    /* Sorting gives deterministic output and makes deduplication inexpensive. */
+    qsort(names, n, sizeof(*names), compare_names);
+    for (int i = 3; i < 6; ++i)
+        printf("%zu\n", filter_by_common_index(i, names, n));
+    for (size_t j = 0; j < n; ++j) { free(names[j].text); free(names[j].lower); }
+    free(names); return 0;
+}
