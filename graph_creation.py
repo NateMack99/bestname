@@ -17,7 +17,7 @@ print(ALLOWED_CHARS)
 #     for s in head:
 #         file.write(f"{s}\n")
 names = []
-with open("usernames_head.csv", "r", encoding="utf-8") as file:
+with open("usernames.csv", "r", encoding="utf-8") as file:
     for name in file:
         names.append(name.strip())
 
