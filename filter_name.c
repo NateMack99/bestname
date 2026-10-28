@@ -4,12 +4,27 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdint.h>
+#include <errno.h>
+#include <limits.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 static const char ALLOWED[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
 typedef struct { char *text, *lower; } Name;
 typedef struct { char *text; size_t count, order; } Key;
 
 static void die(const char *msg) { perror(msg); exit(EXIT_FAILURE); }
+static int positive_int(const char *text, const char *label) {
+    char *end;
+    errno = 0;
+    long value = strtol(text, &end, 10);
+    if (errno || end == text || *end || value < 1 || value > INT_MAX) {
+        fprintf(stderr, "%s must be an integer between 1 and %d\n", label, INT_MAX);
+        exit(EXIT_FAILURE);
+    }
+    return (int)value;
+}
 static void *resize(void *p, size_t n, size_t size) {
     if (size && n > SIZE_MAX / size) { fputs("Allocation overflow\n", stderr); exit(1); }
     void *q = realloc(p, (n ? n : 1) * size);
@@ -44,8 +59,8 @@ static size_t filter_by_common_index(int iters, Name *names, size_t n) {
         char s[2] = {ALLOWED[j], 0};
         keys[j] = (Key){copy(s), 0, j};
     }
-    double fraction = 1.0;
-    for (int i = 0; i < iters; ++i, fraction /= 12.0) {
+    double denominator = 1.0;
+    for (int i = 0; i < iters; ++i, denominator *= 12.0) {
         #pragma omp parallel for schedule(dynamic, 1)
         for (size_t k = 0; k < nk; ++k) {
             keys[k].count = 0;
@@ -56,12 +71,14 @@ static size_t filter_by_common_index(int iters, Name *names, size_t n) {
         qsort(keys, nk, sizeof(*keys), compare_keys);
         size_t nonempty = 0;
         while (nonempty < nk && keys[nonempty].count) ++nonempty;
+        /* Python's zero_keys now counts buckets with at least one match. */
+        size_t percentile = (size_t)((1.0 / denominator) * (double)nk + 0.999);
+        size_t keep = percentile < nonempty ? percentile : nonempty;
+        puts(percentile > nonempty ? "percentile" : "zero_keys");
         printf("top 10: [");
-        for (size_t k = 0; k < nonempty && k < 10; ++k)
-            printf("%s'%s'", k ? ", " : "", keys[k].text);
+        for (size_t k = 0; k < nk && k < 10; ++k)
+            printf("%s('%s', %zu)", k ? ", " : "", keys[k].text, keys[k].count);
         puts("]");
-        /* Match int(top_n_percent * len(l) + 0.999) exactly. */
-        size_t keep = (size_t)(fraction * (double)nonempty + 0.999);
         unsigned char *matched = resize(NULL, n, sizeof(*matched));
         #pragma omp parallel for schedule(static)
         for (size_t j = 0; j < n; ++j) {
@@ -83,15 +100,16 @@ static size_t filter_by_common_index(int iters, Name *names, size_t n) {
             if (!out || strcmp(names[active[j]].text, names[active[out-1]].text))
                 active[out++] = active[j];
         n = out;
-        if (i > 2) {
+        size_t alphabet = sizeof(ALLOWED) - 1;
+        if (keep > SIZE_MAX / alphabet) { fputs("Too many keys\n", stderr); exit(1); }
+        size_t next_n = keep * alphabet;
+        printf("Checks in next iter: %zu\n", n * next_n);
+        if (i > 1) {
             char path[80];
             snprintf(path, sizeof(path), "usernames_filtered_%d.csv", i);
             write_names(path, names, active, n);
         }
         if (i + 1 < iters) {
-            size_t alphabet = sizeof(ALLOWED) - 1;
-            if (keep > SIZE_MAX / alphabet) { fputs("Too many keys\n", stderr); exit(1); }
-            size_t next_n = keep * alphabet;
             Key *next = resize(NULL, next_n, sizeof(*next));
             size_t t = 0;
             for (size_t k = 0; k < keep; ++k) {
@@ -110,6 +128,27 @@ static size_t filter_by_common_index(int iters, Name *names, size_t n) {
     return n;
 }
 int main(int argc, char **argv) {
+    if (argc > 4) {
+        fprintf(stderr, "Usage: %s [input.csv [iterations [workers]]]\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+    int iters = argc > 2 ? positive_int(argv[2], "Iterations") : 5;
+    if (argc > 3) {
+        int workers = positive_int(argv[3], "Workers");
+#ifdef _OPENMP
+        omp_set_dynamic(0);
+        omp_set_num_threads(workers);
+#else
+        if (workers > 1) {
+            fputs("Parallel workers require compiling with OpenMP (-fopenmp).\n", stderr);
+            return EXIT_FAILURE;
+        }
+#endif
+    }
+    printf("[");
+    for (size_t i = 0; i < sizeof(ALLOWED) - 1; ++i)
+        printf("%s'%c'", i ? ", " : "", ALLOWED[i]);
+    puts("]");
     const char *path = argc > 1 ? argv[1] : "usernames_head.csv";
     FILE *f = fopen(path, "r"); if (!f) die(path);
     Name *names = NULL;
@@ -133,8 +172,7 @@ int main(int argc, char **argv) {
     free(line); if (fclose(f)) die("fclose");
     /* Sorting gives deterministic output and makes deduplication inexpensive. */
     qsort(names, n, sizeof(*names), compare_names);
-    for (int i = 3; i < 6; ++i)
-        printf("%zu\n", filter_by_common_index(i, names, n));
+    filter_by_common_index(iters, names, n);
     for (size_t j = 0; j < n; ++j) { free(names[j].text); free(names[j].lower); }
     free(names); return 0;
 }
