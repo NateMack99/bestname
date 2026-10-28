@@ -45,7 +45,7 @@ static size_t filter_by_common_index(int iters, Name *names, size_t n) {
         keys[j] = (Key){copy(s), 0, j};
     }
     double fraction = 1.0;
-    for (int i = 0; i < iters; ++i, fraction /= 4.0) {
+    for (int i = 0; i < iters; ++i, fraction /= 12.0) {
         #pragma omp parallel for schedule(dynamic, 1)
         for (size_t k = 0; k < nk; ++k) {
             keys[k].count = 0;
